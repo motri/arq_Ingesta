@@ -1,0 +1,12 @@
+# Use the official Kibana 7.10.2 image as the base image
+FROM docker.elastic.co/kibana/kibana:7.10.2
+
+# Expose Kibana's default port
+EXPOSE 5601
+
+# Copy the kibana.yml configuration file (if needed, optional)
+ADD kibana.yml /usr/share/kibana/config/kibana.yml
+
+
+# Start Kibana
+CMD ["kibana"]

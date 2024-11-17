@@ -1,0 +1,378 @@
+---
+- hosts: localhost
+  tasks:
+
+  - name: Load vars config.yml
+    ansible.builtin.include_vars:
+      file: ../config/config.yml
+      name: config_vars
+
+  - name: Install Docker Galaxy package
+    community.general.ansible_galaxy_install:
+      type: collection
+      name: community.docker
+
+  - name: Get my public IP
+    community.general.ipify_facts:
+                
+  - name: Create a security group for communication to outside
+    amazon.aws.ec2_security_group:
+      name: ngnix-nifi-sg
+      description: sg with partial access to hadoop-master node
+      region: us-east-1
+      rules:
+        - proto: tcp
+          cidr_ip: "{{ ipify_public_ip }}/32"
+          ports: 
+          - 22
+
+  - name: Start nginx instance
+    amazon.aws.ec2_instance:
+      state: "running"
+      name: "nginx"
+      key_name: "vockey"
+      instance_type: t3.large
+      security_groups: 
+        - ngnix-nifi-sg
+      image_id: ami-066784287e358dad1
+      region: us-east-1
+      tags:
+        Group: nginx
+      volumes:
+      - device_name: /dev/sda1
+        ebs:
+          volume_size: 20
+          delete_on_termination: true
+    register: ec2_config 
+  
+  - name: Update hadoop master sg to allow trafic from this instance
+    amazon.aws.ec2_security_group:
+      group_id: "{{ config_vars.hadoop_master_sg_id }}"
+      name: hadoop-master-sg
+      state: present
+      description: "Allow traffic from nifi to hadoop"
+      region: us-east-1
+      rules:
+        - proto: tcp
+          from_port: 9000
+          to_port: 9000
+          cidr_ip: "{{ ec2_config.instances[0].private_ip_address}}/32"  
+  
+  - name: Update es sg to allow traffic from this instance
+    amazon.aws.ec2_security_group:
+      name: elasticsearch-sg
+      state: present
+      description: "Allow traffic from nifi to es"
+      region: us-east-1
+      rules:
+        - proto: tcp
+          from_port: 9200
+          to_port: 9200
+          cidr_ip: "{{ ec2_config.instances[0].private_ip_address}}/32" 
+
+  - name: Store my public IP in a variable
+    set_fact:
+      instace_public_ip: "{{ ec2_config.instances[0].public_ip_address }}"    
+
+  # - name: Update the fs.defaultFS value in XML file
+  #   ansible.builtin.xml:
+  #     path: core-site.xml
+  #     xpath: "/configuration/property[name='fs.defaultFS']/value"
+  #     value: "hdfs://{{ new_ip }}:9000"
+  #   vars:
+  #     new_ip: "{{ config_vars.hadoop_master_private_ip }}"
+
+  - meta: refresh_inventory
+
+- hosts: tag_Group_nginx
+  tasks:
+  # - name: Install the latest version of Docker
+  #   become: true
+  #   ansible.builtin.yum:
+  #     name: docker
+  #     state: latest
+
+  # - name: Make sure docker is running
+  #   become: true
+  #   ansible.builtin.systemd_service:
+  #     state: started
+  #     enabled: true
+  #     name: docker
+      
+  # - name: Enable docker without sudo
+  #   become: true
+  #   ansible.builtin.command: usermod -a -G docker ec2-user
+
+  # - meta: reset_connection
+
+  # - name: Install git
+  #   become: true
+  #   ansible.builtin.yum:
+  #     name: git
+  #     state: latest
+
+  # - name: Git clone nginx-log-generator image
+  #   ansible.builtin.git:
+  #     repo: 'https://github.com/memaldi/nginx-log-generator'
+  #     dest: /home/ec2-user/nginx-log-generator
+
+  # - name: Build docker image
+  #   community.docker.docker_image:
+  #     build:
+  #       path: /home/ec2-user/nginx-log-generator
+  #     name: atbd/nginx-log-generator
+  #     source: build
+
+  # - name: Run nginx log generator
+  #   ansible.builtin.command: docker run -d --name nginx --restart=unless-stopped -v /home/ec2-user/log/:/tmp/ -e "RATE=5" atbd/nginx-log-generator
+
+  # - name: Stop nginx log generator
+  #   ansible.builtin.command: docker stop nginx
+
+  # - name: Copy nginx-generator.service to host
+  #   become: true
+  #   ansible.builtin.copy:
+  #     src: nginx-generator.service
+  #     dest: /etc/systemd/system/nginx-generator.service
+
+  # - name: Start nginx log generator
+  #   become: true
+  #   systemd:
+  #     state: started
+  #     name: nginx-generator
+  #     daemon_reload: true
+  #     enabled: true
+
+  # - name: Instalar Java
+  #   ansible.builtin.command: sudo yum install -y java-1.8.0-amazon-corretto java-1.8.0-amazon-corretto-devel
+
+  # - name: Establecer variable de entorno JAVA_HOME en ~/.bashrc
+  #   ansible.builtin.shell: echo 'export JAVA_HOME=/usr/lib/jvm/java' >> ~/.bashrc
+
+  # - name: Cargar variables de entorno
+  #   become: true
+  #   ansible.builtin.shell: source /etc/profile
+  #   args:
+  #     executable: /bin/bash
+
+  # - name: Descargar NiFi
+  #   ansible.builtin.command:
+  #     cmd: wget https://dlcdn.apache.org/nifi/1.28.0/nifi-1.28.0-bin.zip -O /tmp/nifi-1.28.0-bin.zip
+
+  # - name: Descomprimir archivo NiFi
+  #   become: true
+  #   ansible.builtin.unarchive:
+  #     src: /tmp/nifi-1.28.0-bin.zip
+  #     dest: /home/ec2-user/
+  #     remote_src: true
+
+  # - name: Asegurarse de que nifi.sh sea ejecutable
+  #   become: true
+  #   file:
+  #     path: /home/ec2-user/nifi-1.28.0/bin/nifi.sh
+  #     mode: '0755'
+  #     state: file
+
+  # - name: Establecer propiedad del directorio NiFi a ec2-user
+  #   become: true
+  #   file:
+  #     path: /home/ec2-user/nifi-1.28.0
+  #     owner: ec2-user
+  #     group: ec2-user
+  #     recurse: yes
+
+  # - name: Agregar servicio NiFi al host
+  #   become: true
+  #   ansible.builtin.copy:
+  #     src: nifi.service
+  #     dest: /etc/systemd/system/nifi.service
+
+  # - name: Recargar systemd para aplicar nuevo servicio
+  #   become: true
+  #   ansible.builtin.systemd:
+  #     daemon_reload: yes
+
+  # - name: Habilitar servicio NiFi para iniciar al arrancar
+  #   become: true
+  #   ansible.builtin.systemd:
+  #     name: nifi
+  #     enabled: true
+
+  # - name: Iniciar servicio NiFi
+  #   become: true
+  #   ansible.builtin.systemd:
+  #     name: nifi
+  #     state: started
+
+  # - name: Esperar a que NiFi inicie
+  #   ansible.builtin.pause:
+  #     seconds: 10
+
+  # - name: Generar un UUID
+  #   ansible.builtin.set_fact:
+  #     my_uuid: "{{ 99999999 | random | to_uuid }}"
+
+  # - name: Guardar contraseña en local
+  #   ansible.builtin.blockinfile:
+  #     path: ../config/credentials
+  #     block: |
+  #       my_uuid: "{{ my_uuid }}"
+  #     marker: "# {mark} my_uuid"
+  #   delegate_to: localhost
+
+  # - name: Actualizar nombre de usuario y contraseña
+  #   become: true
+  #   ansible.builtin.command: 
+  #     cmd: /home/ec2-user/nifi-1.28.0/bin/nifi.sh set-single-user-credentials ec2-user {{ my_uuid }}
+
+  # - name: Reiniciar servicio NiFi para recargar la configuración
+  #   become: true
+  #   ansible.builtin.systemd:
+  #     name: nifi
+  #     state: restarted
+  #     daemon_reload: yes 
+  #     enabled: true   
+  
+  # - name: Crear directorio de configuración de Hadoop
+  #   file:
+  #     path: /home/ec2-user/hadoop-config
+  #     state: directory
+  #     mode: '0755'
+
+  # - name: Mover hdfs-site.xml al directorio de configuración de Hadoop
+  #   ansible.builtin.copy:
+  #     src: hdfs-site.xml
+  #     dest: /home/ec2-user/hadoop-config/hdfs-site.xml
+  #     mode: '0644'
+  #     owner: ec2-user
+  #     group: ec2-user
+  #   become: true
+  
+  - name: Mover core-site.xml al directorio de configuración de Hadoop
+    ansible.builtin.copy:
+      src: core-site.xml
+      dest: /home/ec2-user/hadoop-config/core-site.xml
+      mode: '0644'
+      owner: ec2-user
+      group: ec2-user
+    become: true
+  
+  # - name: Asegurarse de que el archivo de registro de Nginx sea legible por todos los usuarios
+  #   become: true
+  #   ansible.builtin.file:
+  #     path: /home/ec2-user/log/nginx.log
+  #     mode: '0644'
+  #     owner: ec2-user
+  #     group: ec2-user
+
+  # - name: Crear túnel SSH para llamar al REST  API
+  #   ansible.builtin.command:
+  #     cmd: "ssh -i ~/.ssh/vockey.pem -N -L 8443:localhost:8443 ec2-user@{{ hostvars['localhost']['instace_public_ip'] }}"
+  #   async: 10
+  #   poll: 0
+
+  # - name: Esperar a que NiFi inicie
+  #   ansible.builtin.pause:
+  #     seconds: 10
+
+  # - name: Obtener token de autenticación de NiFi
+  #   become: true
+  #   ansible.builtin.uri:
+  #     url: "https://localhost:8443/nifi-api/access/token"
+  #     method: POST
+  #     body_format: form-urlencoded
+  #     body:
+  #       username: ec2-user
+  #       password: 77e27d2b-8e53-53fb-97ca-782c91723d01
+  #     headers:
+  #       Content-Type: "application/x-www-form-urlencoded"
+  #     return_content: yes
+  #     validate_certs: false
+  #     status_code: [200, 201]
+  #   register: auth_response
+
+  # - name: Almacenar el token de autenticación
+  #   set_fact:
+  #     bearer_token: "{{ auth_response.content }}"
+
+  # - name: Obtener detalles del process-group
+  #   ansible.builtin.uri:
+  #     url: "https://localhost:8443/nifi-api/flow/process-groups/root"
+  #     method: GET
+  #     headers:
+  #       Authorization: "Bearer {{ bearer_token }}" 
+  #     validate_certs: no
+  #     return_content: yes
+  #   register: root_group_response 
+
+  # - name: Establecemos el id del process-group
+  #   set_fact:
+  #     root_process_group_id: "{{ root_group_response.json.processGroupFlow.id }}"
+
+  # - name: Cargar la plantilla
+  #   ansible.builtin.uri:
+  #     url: "https://localhost:8443/nifi-api/process-groups/{{ root_process_group_id }}/templates/upload"
+  #     method: POST
+  #     headers:
+  #         Authorization: "Bearer {{ bearer_token }}"
+  #     body_format: form-multipart
+  #     body:
+  #       template: "{{ lookup('file', 'nifi_flow.xml') }}"
+  #     return_content: true
+  #     validate_certs: false
+  #     status_code: [200, 201]
+  #   register: respuesta
+
+  # - name: Extraer el ID de la plantilla para poder inicializarla
+  #   set_fact:
+  #     template_id: "{{ (respuesta.content | regex_search('<id>([^<]+)</id>', '\\1'))[0] }}"
+
+  # - name: Instanciar plantilla de NiFi
+  #   ansible.builtin.uri:
+  #     url: "https://localhost:8443/nifi-api/process-groups/{{ root_process_group_id }}/template-instance"
+  #     method: POST
+  #     headers:
+  #       Authorization: "Bearer {{ bearer_token }}"
+  #     body_format: json
+  #     body: 
+  #       templateId: "{{ template_id }}"
+  #       originX: 0
+  #       originY: 0
+  #     validate_certs: no
+  #     return_content: no
+  #     status_code: [200, 201]
+
+  # - name: Obtener procesadores en el process-groups
+  #   ansible.builtin.uri:
+  #     url: "https://localhost:8443/nifi-api/process-groups/{{ root_process_group_id }}/processors"
+  #     method: GET
+  #     headers:
+  #         Authorization: "Bearer {{ bearer_token }}"
+  #     return_content: true
+  #     validate_certs: false
+  #     status_code: [200, 201]
+  #   register: processors_response
+
+  # - name: Analizar JSON de nivel superior y luego analizar el contenido interno
+  #   set_fact:
+  #     processors_data: "{{ processors_response.json.processors }}"
+
+  # - name: Iniciar cada procesador
+  #   ansible.builtin.uri:
+  #     url: "https://localhost:8443/nifi-api/processors/{{ item.id }}/run-status"
+  #     method: PUT
+  #     headers:
+  #         Authorization: "Bearer {{ bearer_token }}"
+  #     body_format: json
+  #     body: |
+  #       {
+  #         "revision": {
+  #           "version": 0
+  #         },
+  #         "state": "RUNNING"
+  #       }
+  #     validate_certs: false
+  #     status_code: [200, 201]
+  #   loop: "{{ processors_data }}"
+  #   loop_control:
+  #     label: "{{ item.component.name }}"

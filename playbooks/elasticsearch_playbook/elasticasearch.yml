@@ -1,0 +1,111 @@
+---
+- hosts: localhost
+  vars:
+    region: us-east-1
+    instance_type: t3.medium
+    image_id: ami-066784287e358dad1
+    security_group_name: elasticsearch-sg
+  tasks:
+    - name: Get my public IP
+      community.general.ipify_facts:
+
+    - name: Create a security group for Elasticsearch access
+      amazon.aws.ec2_security_group:
+        name: "{{ security_group_name }}"
+        description: Security group with restricted SSH and Elasticsearch access
+        region: "{{ region }}"
+        rules:
+          - proto: tcp
+            cidr_ip: "{{ ipify_public_ip }}/32"
+            ports: [22, 9200]
+      register: es_security_group
+
+    - name: Launch EC2 instance for Elasticsearch
+      amazon.aws.ec2_instance:
+        state: running
+        name: "elasticsearch"
+        key_name: "vockey"
+        instance_type: "{{ instance_type }}"
+        security_groups:
+          - "{{ es_security_group.group_id }}"
+        image_id: "{{ image_id }}"
+        region: "{{ region }}"
+        tags:
+          Group: "elasticsearch"
+      register: es_instance_info
+
+    - name: Update config.yml with instance details
+      ansible.builtin.blockinfile:
+        path: ../config/config.yml
+        block: |
+          es_instance_private_ip: "{{ es_instance_info.instances[0].private_ip_address }}"
+          es_sg_id: "{{ es_security_group.group_id }}"
+        marker: "# {mark} es_instance details"
+      delegate_to: localhost
+
+- hosts: tag_Group_elasticsearch
+  become: yes
+  vars:
+    es_config: 
+      - { key: 'network.host', value: '0.0.0.0' }
+      - { key: 'discovery.type', value: 'single-node' }
+      - { key: 'cluster.name', value: 'my-application' }
+      - { key: 'node.name', value: 'node-1' }
+      - { key: 'script.allowed_types', value: 'inline' }
+      - { key: 'script.allowed_contexts', value: 'update' }
+  tasks:
+    - name: Install Java
+      ansible.builtin.yum:
+        name:
+          - java-1.8.0-amazon-corretto
+          - java-1.8.0-amazon-corretto-devel
+        state: present
+
+    - name: Set JAVA_HOME environment variable
+      ansible.builtin.lineinfile:
+        path: ~/.bashrc
+        line: 'export JAVA_HOME=/usr/lib/jvm/java'
+
+    - name: Download Elasticsearch
+      ansible.builtin.get_url:
+        url: "https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-7.10.2-x86_64.rpm"
+        dest: "/tmp/elasticsearch.rpm"
+
+    - name: Import Elasticsearch GPG key
+      ansible.builtin.rpm_key:
+        state: present
+        key: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+
+    - name: Install Elasticsearch
+      ansible.builtin.yum:
+        name: /tmp/elasticsearch.rpm
+        state: present
+
+    - name: Configure Elasticsearch
+      ansible.builtin.lineinfile:
+        path: /etc/elasticsearch/elasticsearch.yml
+        create: yes
+        regexp: "^{{ item.key }}:"
+        line: "{{ item.key }}: {{ item.value }}"
+      loop: "{{ es_config }}"
+
+    - name: Start and enable Elasticsearch
+      ansible.builtin.systemd:
+        name: elasticsearch
+        enabled: true
+        state: started
+
+    - name: Create requests index
+      ansible.builtin.uri:
+        url: "http://{{ ansible_default_ipv4.address }}:9200/requests"
+        method: PUT
+        body_format: json
+        body: |
+          {
+            "settings": {
+              "number_of_shards": 1,
+              "number_of_replicas": 1
+            }
+          }
+        validate_certs: false
+        status_code: [200, 201]
